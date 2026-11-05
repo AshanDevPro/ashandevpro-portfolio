@@ -1,5 +1,4 @@
-
-name: Verify Namecheap Connection
+name: Deploy AshanDevPro to Namecheap
 
 on:
   workflow_dispatch:
@@ -7,8 +6,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ashandevpro-deployment
+  cancel-in-progress: false
+
 jobs:
-  verify:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,6 +30,9 @@ jobs:
       - name: Build website
         run: npm run build
 
+      - name: Package website
+        run: tar -czf site.tar.gz -C dist .
+
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.NC_SSH_PRIVATE_KEY }}
@@ -38,20 +44,28 @@ jobs:
           printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/deploy_key"
           printf '%s\n' "$SSH_HOSTS" > "$HOME/.ssh/known_hosts"
 
-      - name: Check SSH key fingerprint
-        run: |
-          ssh-keygen -y -f "$HOME/.ssh/deploy_key" |
-            ssh-keygen -lf - -E sha256
-
-      - name: Test Namecheap connection
+      - name: Upload website to Namecheap
         env:
           NC_HOST: ${{ secrets.NC_HOST }}
           NC_USER: ${{ secrets.NC_USER }}
         run: |
-          ssh -o BatchMode=yes \
+          set -euo pipefail
+
+          scp -P 21098 \
+            -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -i "$HOME/.ssh/deploy_key" \
-            -p 21098 \
+            site.tar.gz \
+            "$NC_USER@$NC_HOST:ashandevpro_site.tar.gz"
+
+          ssh -p 21098 \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -i "$HOME/.ssh/deploy_key" \
             "$NC_USER@$NC_HOST" \
-            'test -d "$HOME/public_html" && echo "Namecheap connection successful"'
+            'set -e; test -d "$HOME/public_html"; tar -xzf "$HOME/ashandevpro_site.tar.gz" -C "$HOME/public_html"; rm "$HOME/ashandevpro_site.tar.gz"'
+
+      - name: Deployment complete
+        run: echo "Website uploaded to Namecheap successfully"
