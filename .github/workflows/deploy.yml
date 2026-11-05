@@ -1,5 +1,6 @@
 name: Deploy AshanDevPro to Namecheap
 
+# Manual deployment first
 on:
   workflow_dispatch:
 
@@ -7,18 +8,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: ashandevpro-deployment
+  group: ashandevpro-production
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout code
+      - name: Checkout website code
         uses: actions/checkout@v7
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -27,13 +29,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build website
+      - name: Build React website
         run: npm run build
 
-      - name: Package website
-        run: tar -czf site.tar.gz -C dist .
+      - name: Prepare website archive
+        run: |
+          set -euo pipefail
 
-      - name: Configure SSH
+          test -s dist/index.html
+
+          # Preserve existing server .htaccess and demos
+          tar -czf ashandevpro-site.tar.gz \
+            --exclude='./.htaccess' \
+            --exclude='./demos' \
+            -C dist .
+
+      - name: Configure secure SSH
         env:
           SSH_KEY: ${{ secrets.NC_SSH_PRIVATE_KEY }}
           SSH_HOSTS: ${{ secrets.NC_SSH_KNOWN_HOSTS }}
@@ -41,31 +52,67 @@ jobs:
           set -euo pipefail
           umask 077
           mkdir -p "$HOME/.ssh"
+
           printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/deploy_key"
           printf '%s\n' "$SSH_HOSTS" > "$HOME/.ssh/known_hosts"
 
-      - name: Upload website to Namecheap
+          chmod 600 "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Verify Namecheap destination
+        env:
+          NC_HOST: ${{ secrets.NC_HOST }}
+          NC_USER: ${{ secrets.NC_USER }}
+        run: |
+          ssh \
+            -p 21098 \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -i "$HOME/.ssh/deploy_key" \
+            "$NC_USER@$NC_HOST" \
+            'test -d "$HOME/public_html" &&
+             test -w "$HOME/public_html" &&
+             echo "Namecheap destination verified"'
+
+      - name: Transfer website to Namecheap
         env:
           NC_HOST: ${{ secrets.NC_HOST }}
           NC_USER: ${{ secrets.NC_USER }}
         run: |
           set -euo pipefail
 
-          scp -P 21098 \
+          scp \
+            -P 21098 \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -i "$HOME/.ssh/deploy_key" \
-            site.tar.gz \
-            "$NC_USER@$NC_HOST:ashandevpro_site.tar.gz"
+            ashandevpro-site.tar.gz \
+            "$NC_USER@$NC_HOST:ashandevpro-site.tar.gz"
 
-          ssh -p 21098 \
+      - name: Publish website to public_html
+        env:
+          NC_HOST: ${{ secrets.NC_HOST }}
+          NC_USER: ${{ secrets.NC_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -p 21098 \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -i "$HOME/.ssh/deploy_key" \
             "$NC_USER@$NC_HOST" \
-            'set -e; test -d "$HOME/public_html"; tar -xzf "$HOME/ashandevpro_site.tar.gz" -C "$HOME/public_html"; rm "$HOME/ashandevpro_site.tar.gz"'
+            'set -eu
+             archive="$HOME/ashandevpro-site.tar.gz"
+             trap '\''rm -f "$archive"'\'' EXIT
+             test -f "$archive"
+             test -d "$HOME/public_html"
+             tar -xzf "$archive" -C "$HOME/public_html"
+             test -s "$HOME/public_html/index.html"
+             echo "Website files deployed successfully"'
 
-      - name: Deployment complete
-        run: echo "Website uploaded to Namecheap successfully"
+      - name: Deployment finished
+        run: echo "AshanDevPro deployment completed"
